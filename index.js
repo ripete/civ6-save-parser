@@ -24,6 +24,7 @@ const COMPRESSED_DATA_END = new Buffer([0, 0, 0xFF, 0xFF]);
 const GAME_DATA = {
   GAME_TURN: new Buffer([0x9D, 0x2C, 0xE6, 0xBD]),
   GAME_SPEED: new Buffer([0x99, 0xB0, 0xD9, 0x05]),
+  TURN_TYPE: new Buffer([0xC5, 0xA7, 0x2E, 0x81]),
   MOD_BLOCK_1: new Buffer([0x5C, 0xAE, 0x27, 0x84]),
   MOD_BLOCK_2: new Buffer([0xC8, 0xD1, 0x8C, 0x1B]),
   MOD_BLOCK_3: new Buffer([0x44, 0x7F, 0xD4, 0xFE]),
@@ -79,6 +80,8 @@ module.exports.parse = (buffer, options) => {
     CIVS: []
   };
 
+  let unrecognizedChunks = [];
+
   const chunks = [];
   let chunkStart = 0;
   let curActor;
@@ -111,10 +114,14 @@ module.exports.parse = (buffer, options) => {
 
     const info = parseEntry(buffer, state);
 
+    let recognisedMarker = false;
+
     const tryAddActor = (key, marker) => {
       if (info.marker.equals(marker)) {
         curActor = {};
         curActor[key] = info;
+
+        recognisedMarker = true;
 
         parsed.ACTORS.push(curActor);
       }
@@ -128,10 +135,12 @@ module.exports.parse = (buffer, options) => {
       tryAddActor('START_ACTOR', START_ACTOR);
     } else if (info.marker.equals(ACTOR_DATA.ACTOR_DESCRIPTION)) {
       curActor = null;
+      recognisedMarker = true;
     } else {
       for (let key in GAME_DATA) {
         if (info.marker.equals(GAME_DATA[key])) {
           parsed[key] = info;
+          recognisedMarker = true;
         }
       }
 
@@ -139,6 +148,7 @@ module.exports.parse = (buffer, options) => {
         for (let key in ACTOR_DATA) {
           if (info.marker.equals(ACTOR_DATA[key])) {
             curActor[key] = info;
+            recognisedMarker = true;
           }
         }
       }
@@ -146,6 +156,11 @@ module.exports.parse = (buffer, options) => {
 
     info.chunk = buffer.slice(chunkStart, state.pos); 
     chunks.push(info.chunk);
+
+    if (!recognisedMarker && info.data !== "SKIP" && info.type !== DATA_TYPES.ARRAY_START) {
+      info.name = util.inspect(info.marker, false, null);
+      unrecognizedChunks.push(info);
+    }
 
     chunkStart = state.pos;
   } while (null !== (state = readState(buffer, state)));
@@ -176,9 +191,31 @@ module.exports.parse = (buffer, options) => {
     parsed = simplify(parsed);
   }
 
+  unrecognizedChunks.sort((a,b) => {
+     if (a.name === b.name)
+       return util.inspect(a, false, null).localeCompare(util.inspect(b, false, null));
+     return a.name.localeCompare(b.name);
+  });
+
+  let deleteNext = false;
+  for (let i = unrecognizedChunks.length -1; i >= 0; --i){
+    if (i > 0 && (util.inspect(unrecognizedChunks[i].marker, false, null) 
+        === util.inspect(unrecognizedChunks[i - 1].marker, false, null))) 
+    {
+        deleteNext = true;
+        unrecognizedChunks.splice(i, 1);
+    }
+    else {
+      if (deleteNext)
+          unrecognizedChunks.splice(i, 1);
+      deleteNext = false;
+    }
+  }
+
   return {
     parsed: parsed,
-    chunks: chunks
+    chunks: chunks,
+    unrecognizedChunks: unrecognizedChunks,
   };
 };
 
@@ -204,8 +241,21 @@ if (!module.parent) {
   } else {
     const buffer = new Buffer(fs.readFileSync(argv._[0]));
     const result = module.exports.parse(buffer, argv);
-    console.log(util.inspect(result.parsed, false, null));
+    console.log(util.inspect(result.parsed["TURN_TYPE"], false, null));
   }
+}
+
+
+function str2hex(str)
+{
+  let result = "";
+  for (let i = 0; i < str.length; ++i) 
+  {
+    let charHex = "00" + str.charCodeAt(i).toString(16);
+    charHex = charHex.substr(charHex.length-2);
+    result += charHex;
+  }
+  return result;
 }
 
 // Helper functions
